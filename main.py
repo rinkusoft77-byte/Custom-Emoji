@@ -32,12 +32,18 @@ def parse_admin_ids(value: str) -> set[int]:
         try:
             admin_ids.add(int(item))
         except ValueError:
-            logging.warning("Noto‘g‘ri ADMIN_IDS qiymati e’tiborsiz qoldirildi: %s", item)
+            logging.warning(
+                "Noto‘g‘ri admin ID e’tiborsiz qoldirildi: %s. "
+                "Username emas, raqamli Telegram ID kiriting.",
+                item,
+            )
 
     return admin_ids
 
 
-ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+ADMIN_IDS = parse_admin_ids(
+    f'{os.getenv("ADMIN_IDS", "")} {os.getenv("ADMIN_ID", "")}'
+)
 
 
 def load_users() -> None:
@@ -140,14 +146,42 @@ async def help_handler(message: Message) -> None:
         "1. Kerakli Premium emojini tanlang.\n"
         "2. Uni botga oddiy matn sifatida yuboring.\n"
         "3. Bot sizga emoji ID va tayyor HTML kodni beradi.\n\n"
+        "Admin ID ni bilish uchun: <code>/id</code>\n\n"
         "Eslatma: oddiy Unicode emoji custom emoji hisoblanmaydi."
+    )
+
+
+@router.message(Command("id"))
+async def id_handler(message: Message) -> None:
+    if not message.from_user:
+        return
+
+    is_admin = message.from_user.id in ADMIN_IDS
+    admin_status = "✅ Admin" if is_admin else "❌ Admin emas"
+
+    await message.answer(
+        "🆔 <b>Sizning Telegram ID’ingiz:</b>\n"
+        f"<code>{message.from_user.id}</code>\n\n"
+        f"<b>Botdagi holat:</b> {admin_status}\n\n"
+        "Railway → Variables ichida quyidagicha yozing:\n"
+        f"<code>ADMIN_IDS={message.from_user.id}</code>\n\n"
+        "So‘ng Railway deployment’ni restart yoki redeploy qiling."
     )
 
 
 @router.message(Command("sendall"))
 async def sendall_handler(message: Message, bot: Bot) -> None:
-    if not message.from_user or message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔️ Bu komanda faqat admin uchun.")
+    if not message.from_user:
+        return
+
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer(
+            "⛔️ <b>Bu komanda faqat admin uchun.</b>\n\n"
+            f"Sizning ID’ingiz: <code>{message.from_user.id}</code>\n\n"
+            "Railway → Variables ichida quyidagicha kiriting:\n"
+            f"<code>ADMIN_IDS={message.from_user.id}</code>\n\n"
+            "Keyin deployment’ni restart yoki redeploy qiling."
+        )
         return
 
     command_text = message.text or message.caption or ""
@@ -158,6 +192,9 @@ async def sendall_handler(message: Message, bot: Bot) -> None:
         await message.answer(
             "📢 <b>Foydalanish:</b>\n\n"
             "<code>/sendall Xabaringiz</code>\n\n"
+            "HTML custom emoji kodi ham ishlaydi:\n"
+            '<code>/sendall &lt;tg-emoji emoji-id="5312361253610475399"&gt;'
+            "💎&lt;/tg-emoji&gt;</code>\n\n"
             "Yoki istalgan matn, rasm, video yoki boshqa xabarga reply qilib "
             "<code>/sendall</code> yozing."
         )
@@ -176,31 +213,26 @@ async def sendall_handler(message: Message, bot: Bot) -> None:
     failed = 0
     blocked_users: set[int] = set()
 
+    async def send_to_user(user_id: int) -> None:
+        if message.reply_to_message:
+            await message.reply_to_message.copy_to(chat_id=user_id)
+        else:
+            await bot.send_message(
+                chat_id=user_id,
+                text=broadcast_text,
+                parse_mode=ParseMode.HTML,
+            )
+
     for user_id in user_ids:
         try:
-            if message.reply_to_message:
-                await message.reply_to_message.copy_to(chat_id=user_id)
-            else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=broadcast_text,
-                    parse_mode=None,
-                )
-
+            await send_to_user(user_id)
             sent += 1
             await asyncio.sleep(0.05)
 
         except TelegramRetryAfter as error:
             await asyncio.sleep(error.retry_after)
             try:
-                if message.reply_to_message:
-                    await message.reply_to_message.copy_to(chat_id=user_id)
-                else:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=broadcast_text,
-                        parse_mode=None,
-                    )
+                await send_to_user(user_id)
                 sent += 1
             except TelegramForbiddenError:
                 failed += 1
@@ -212,8 +244,13 @@ async def sendall_handler(message: Message, bot: Bot) -> None:
             failed += 1
             blocked_users.add(user_id)
 
-        except TelegramBadRequest:
+        except TelegramBadRequest as error:
             failed += 1
+            logging.warning(
+                "Xabarni %s foydalanuvchiga yuborib bo‘lmadi: %s",
+                user_id,
+                error,
+            )
 
         except Exception:
             failed += 1
@@ -264,8 +301,11 @@ async def main() -> None:
 
     if not ADMIN_IDS:
         logging.warning(
-            "ADMIN_IDS kiritilmagan. /sendall komandasi hech kim uchun ishlamaydi."
+            "ADMIN_IDS yoki ADMIN_ID kiritilmagan. "
+            "/sendall komandasi hech kim uchun ishlamaydi."
         )
+    else:
+        logging.info("Admin ID lar yuklandi: %s", sorted(ADMIN_IDS))
 
     load_users()
 
