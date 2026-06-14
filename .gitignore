@@ -1,6 +1,10 @@
 # Secrets
 .env
 
+# Runtime data
+data/users.json
+data/*.tmp
+
 # Python
 __pycache__/
 *.py[cod]
