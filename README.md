@@ -1,146 +1,190 @@
-# Custom Emoji ID Bot
+# Custom Emoji Toolkit
 
-Telegram Premium custom emojilarining `custom_emoji_id` qiymatini aniqlaydigan Aiogram 3 bot.
+Telegram custom emojilarini tahlil qiladigan Aiogram 3 bot.
 
-## Imkoniyatlari
+## Custom Emoji imkoniyatlari
 
-- Matndagi custom emoji ID larini oladi
-- Media caption ichidagi custom emoji ID larini ham oladi
-- Bir xabardagi bir nechta emoji ID ni chiqaradi
-- Takrorlangan ID larni bir marta ko‘rsatadi
-- Tayyor `<tg-emoji>` HTML kodini beradi
-- Foydalanuvchilarni avtomatik ro‘yxatga oladi
-- Admin `/sendall` orqali barcha foydalanuvchilarga xabar yubora oladi
-- Matn, rasm, video va boshqa xabarlarni tarqatishni qo‘llab-quvvatlaydi
-- Railway va Docker orqali ishga tushirishga tayyor
+- Custom emoji yuborilganda `custom_emoji_id` ni aniqlaydi
+- Bir xabardagi bir nechta custom emoji ID larini oladi
+- Takrorlangan ID larni avtomatik olib tashlaydi
+- Media caption va quoted text ichidagi custom emoji entity larini taniydi
+- Custom emoji formatini ko‘rsatadi: Static / Animated / Video
+- Base Unicode emoji ni ko‘rsatadi
+- `needs_repainting` holatini ko‘rsatadi
+- Width, height va file size ma’lumotlarini chiqaradi
+- Emoji qaysi custom emoji pack ga tegishli ekanini topadi
+- Pack uchun `t.me/addemoji/...` link beradi
+- Tayyor HTML `<tg-emoji>` kodini beradi
+- Tayyor MarkdownV2 `tg://emoji?id=...` kodini beradi
+- Developer uchun `file_id`, `file_unique_id` va boshqa metadata ni JSON ko‘rinishida beradi
+- Bir so‘rovda 200 tagacha custom emoji ID bilan ishlaydi
+
+## Komandalar
+
+### `/emoji`
+
+Custom emoji ID bo‘yicha to‘liq ma’lumot oladi.
+
+```text
+/emoji 5368324170671202286
+```
+
+Bir nechta ID ham berish mumkin:
+
+```text
+/emoji 5368324170671202286 5312361253610475399
+```
+
+Yoki custom emoji bor xabarga reply qilib:
+
+```text
+/emoji
+```
+
+### `/scan`
+
+Custom emoji bor xabarga reply qilib yuboriladi. Reply qilingan xabardagi barcha custom emoji larni tahlil qiladi.
+
+```text
+/scan
+```
+
+### `/pack`
+
+Custom emoji qaysi pack ga tegishli ekanini ko‘rsatadi:
+
+- Pack title
+- Pack short name
+- Pack ichidagi emoji soni
+- Telegram pack link
+
+```text
+/pack 5368324170671202286
+```
+
+Yoki emoji bor xabarga reply qilib:
+
+```text
+/pack
+```
+
+### `/json`
+
+Developer uchun custom emoji metadata beradi.
+
+```text
+/json 5368324170671202286
+```
+
+Natijada quyidagi kabi maydonlar chiqadi:
+
+```json
+{
+  "custom_emoji_id": "5368324170671202286",
+  "emoji": "👍",
+  "set_name": "example_pack",
+  "format": "Animated (.TGS)",
+  "is_animated": true,
+  "is_video": false,
+  "needs_repainting": false,
+  "width": 100,
+  "height": 100,
+  "file_size": 12345,
+  "file_id": "...",
+  "file_unique_id": "..."
+}
+```
+
+Agar JSON Telegram xabari uchun juda katta bo‘lsa, bot avtomatik `.json` fayl yuboradi.
+
+## Oddiy foydalanish
+
+Botga shunchaki Telegram custom emoji yuboring. Bot avtomatik ravishda quyidagilarni qaytaradi:
+
+```text
+Custom Emoji ID
+Base emoji
+Format
+Recolor
+O‘lcham
+File size
+Pack
+Pack link
+HTML
+MarkdownV2
+tg://emoji link
+```
+
+HTML namunasi:
+
+```html
+<tg-emoji emoji-id="5368324170671202286">👍</tg-emoji>
+```
+
+MarkdownV2 namunasi:
+
+```text
+![👍](tg://emoji?id=5368324170671202286)
+```
+
+Custom emoji pack link namunasi:
+
+```text
+https://t.me/addemoji/PACK_SHORT_NAME
+```
+
+## Mavjud boshqa funksiyalar
+
+Oldingi funksiyalar saqlanadi:
+
+- `/id`
+- Admin `/sendall`
+- User storage
+- Railway / Docker deploy
+
+Ularga yangi aloqasiz feature qo‘shilmagan.
 
 ## Talablar
 
-- Python 3.10 yoki undan yangi versiya
+- Python 3.10+
 - Telegram bot tokeni
-- `aiogram 3.28.2`
+- `aiogram==3.28.2`
 
-## Lokal ishga tushirish
+## Environment variables
 
-### 1. Reponi klonlash
-
-```bash
-git clone https://github.com/rinkusoft77-byte/Custom-Emoji.git
-cd Custom-Emoji
+```text
+BOT_TOKEN=BOTFATHER_DAN_OLINGAN_TOKEN
+ADMIN_IDS=123456789
+USERS_FILE=data/users.json
 ```
 
-### 2. Virtual muhit yaratish
-
-Windows:
-
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-Linux/macOS:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. Kutubxonalarni o‘rnatish
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Environment variables
-
-Windows PowerShell:
-
-```powershell
-$env:BOT_TOKEN="BOTFATHER_DAN_OLINGAN_TOKEN"
-$env:ADMIN_IDS="123456789"
-python main.py
-```
-
-Windows CMD:
-
-```cmd
-set BOT_TOKEN=BOTFATHER_DAN_OLINGAN_TOKEN
-set ADMIN_IDS=123456789
-python main.py
-```
-
-Linux/macOS:
-
-```bash
-export BOT_TOKEN="BOTFATHER_DAN_OLINGAN_TOKEN"
-export ADMIN_IDS="123456789"
-python main.py
-```
-
-Bir nechta admin bo‘lsa, ID larni vergul bilan ajrating:
+Bir nechta admin:
 
 ```text
 ADMIN_IDS=123456789,987654321
 ```
 
-## Railway orqali deploy
+## Railway
 
-1. GitHub reponi Railway loyihasiga ulang.
-2. `Variables` bo‘limiga kiring.
-3. Quyidagi variable larni qo‘shing:
+Railway `Variables`:
 
 ```text
 BOT_TOKEN=BOTFATHER_DAN_OLINGAN_TOKEN
 ADMIN_IDS=TELEGRAM_RAQAMLI_ID
 ```
 
-4. Railway `Dockerfile` orqali botni avtomatik ishga tushiradi.
-
-### Foydalanuvchilarni doimiy saqlash
-
-Bot foydalanuvchilarni standart holatda `data/users.json` fayliga saqlaydi. Railway redeploy yoki restart paytida ma’lumot yo‘qolmasligi uchun Volume ulang va variable kiriting:
-
-```text
-USERS_FILE=/data/users.json
-```
-
-Volume mount path:
+Persistent user storage kerak bo‘lsa Volume mount path:
 
 ```text
 /data
 ```
 
-## Custom emoji ID olish
-
-Botga Telegram Premium custom emojisini yuboring. Bot quyidagilarni qaytaradi:
+va variable:
 
 ```text
-Custom Emoji ID:
-5368324170671202286
+USERS_FILE=/data/users.json
 ```
-
-HTML orqali ishlatish namunasi:
-
-```html
-<tg-emoji emoji-id="5368324170671202286">💎</tg-emoji>
-```
-
-## Barcha foydalanuvchilarga xabar yuborish
-
-Oddiy matn yuborish:
-
-```text
-/sendall Assalomu alaykum! Yangi yangilik bor.
-```
-
-Rasm, video, formatlangan matn yoki custom emoji yuborish uchun kerakli xabarga reply qilib yozing:
-
-```text
-/sendall
-```
-
-Tarqatish tugagach, bot yuborilgan va yuborilmagan xabarlar sonini ko‘rsatadi. Botni bloklagan foydalanuvchilar bazadan avtomatik o‘chiriladi.
 
 ## Xavfsizlik
 
-Bot tokenini kod ichiga yozmang va `.env` faylini GitHub’ga push qilmang. Token va admin ID faqat environment variable orqali beriladi.
+Bot tokenini kodga yozmang. `.env` faylini GitHub ga push qilmang.

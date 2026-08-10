@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from html import escape
 from pathlib import Path
@@ -16,13 +17,15 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message, MessageEntity, TelegramObject
+from aiogram.types import BufferedInputFile, Message, MessageEntity, Sticker, StickerSet, TelegramObject
 
 router = Router()
 
 USERS_FILE = Path(os.getenv("USERS_FILE", "data/users.json"))
 USERS: set[int] = set()
 USERS_LOCK = asyncio.Lock()
+MAX_EMOJI_IDS = 200
+MAX_MESSAGE_LENGTH = 3900
 
 
 def parse_admin_ids(value: str) -> set[int]:
@@ -108,11 +111,14 @@ router.message.outer_middleware(RegisterUserMiddleware())
 
 
 def collect_custom_emoji_ids(message: Message) -> list[str]:
-    """Return unique custom emoji IDs from message text or media caption."""
+    """Return unique custom emoji IDs from message text, caption and quote."""
     entities: list[MessageEntity] = [
         *(message.entities or []),
         *(message.caption_entities or []),
     ]
+
+    if message.quote and message.quote.entities:
+        entities.extend(message.quote.entities)
 
     emoji_ids: list[str] = []
     seen: set[str] = set()
@@ -126,28 +132,193 @@ def collect_custom_emoji_ids(message: Message) -> list[str]:
             emoji_ids.append(entity.custom_emoji_id)
             seen.add(entity.custom_emoji_id)
 
-    return emoji_ids
+    return emoji_ids[:MAX_EMOJI_IDS]
+
+
+def parse_custom_emoji_ids(value: str) -> list[str]:
+    """Parse unique numeric custom emoji IDs from arbitrary command text."""
+    ids = re.findall(r"\d{10,25}", value)
+    return list(dict.fromkeys(ids))[:MAX_EMOJI_IDS]
+
+
+def sticker_format(sticker: Sticker) -> str:
+    if sticker.is_animated:
+        return "Animated (.TGS)"
+    if sticker.is_video:
+        return "Video (.WEBM)"
+    return "Static (.WEBP/PNG)"
+
+
+async def get_custom_emoji_map(bot: Bot, emoji_ids: list[str]) -> dict[str, Sticker]:
+    if not emoji_ids:
+        return {}
+
+    try:
+        stickers = await bot.get_custom_emoji_stickers(
+            custom_emoji_ids=emoji_ids[:MAX_EMOJI_IDS]
+        )
+    except TelegramBadRequest:
+        logging.exception("Custom emoji ma’lumotlarini olishda Telegram API xatosi.")
+        return {}
+
+    return {
+        sticker.custom_emoji_id: sticker
+        for sticker in stickers
+        if sticker.custom_emoji_id
+    }
+
+
+async def get_sticker_sets(
+    bot: Bot,
+    stickers: list[Sticker],
+) -> dict[str, StickerSet]:
+    result: dict[str, StickerSet] = {}
+    set_names = {
+        sticker.set_name
+        for sticker in stickers
+        if sticker.set_name
+    }
+
+    for set_name in set_names:
+        try:
+            result[set_name] = await bot.get_sticker_set(name=set_name)
+        except TelegramBadRequest:
+            logging.warning("Sticker set topilmadi: %s", set_name)
+
+    return result
+
+
+def build_emoji_section(
+    index: int,
+    emoji_id: str,
+    sticker: Sticker | None,
+) -> str:
+    if not sticker:
+        return (
+            f"<b>{index}. Custom Emoji</b>\n"
+            f"🆔 <code>{emoji_id}</code>\n"
+            "❌ Telegram bu ID uchun custom emoji topmadi."
+        )
+
+    base_emoji = sticker.emoji or "🙂"
+    html_code = f'<tg-emoji emoji-id="{emoji_id}">{base_emoji}</tg-emoji>'
+    markdown_code = f"![{base_emoji}](tg://emoji?id={emoji_id})"
+    tg_link = f"tg://emoji?id={emoji_id}"
+
+    lines = [
+        f"<b>{index}. Custom Emoji</b>",
+        f"🆔 <b>ID:</b> <code>{emoji_id}</code>",
+        f"🙂 <b>Base emoji:</b> {escape(base_emoji)}",
+        f"🎞 <b>Format:</b> {sticker_format(sticker)}",
+        "🎨 <b>Recolor:</b> "
+        + ("✅ Ha" if sticker.needs_repainting else "❌ Yo‘q"),
+        f"📐 <b>O‘lcham:</b> {sticker.width}×{sticker.height}",
+    ]
+
+    if sticker.file_size is not None:
+        lines.append(f"📦 <b>File size:</b> {sticker.file_size:,} byte")
+
+    if sticker.set_name:
+        lines.extend(
+            [
+                f"📚 <b>Pack:</b> <code>{escape(sticker.set_name)}</code>",
+                f'🔗 <b>Pack link:</b> '
+                f'<a href="https://t.me/addemoji/{escape(sticker.set_name)}">'
+                "ochish</a>",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "<b>HTML:</b>",
+            f"<code>{escape(html_code)}</code>",
+            "",
+            "<b>MarkdownV2:</b>",
+            f"<code>{escape(markdown_code)}</code>",
+            "",
+            "<b>tg link:</b>",
+            f"<code>{escape(tg_link)}</code>",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+async def send_emoji_report(
+    message: Message,
+    bot: Bot,
+    emoji_ids: list[str],
+) -> None:
+    emoji_ids = list(dict.fromkeys(emoji_ids))[:MAX_EMOJI_IDS]
+
+    if not emoji_ids:
+        await message.answer(
+            "❌ <b>Custom emoji topilmadi.</b>\n\n"
+            "Custom emoji yuboring, xabarga reply qilib <code>/scan</code> yozing "
+            "yoki <code>/emoji ID</code> ishlating."
+        )
+        return
+
+    emoji_map = await get_custom_emoji_map(bot, emoji_ids)
+    sections = [
+        build_emoji_section(
+            index,
+            emoji_id,
+            emoji_map.get(emoji_id),
+        )
+        for index, emoji_id in enumerate(emoji_ids, start=1)
+    ]
+
+    chunks: list[str] = []
+    current = "✅ <b>Custom Emoji ma’lumotlari</b>\n\n"
+
+    for section in sections:
+        candidate = current + section + "\n\n──────────\n\n"
+        if len(candidate) > MAX_MESSAGE_LENGTH and current.strip():
+            chunks.append(current.removesuffix("\n\n──────────\n\n"))
+            current = section + "\n\n──────────\n\n"
+        else:
+            current = candidate
+
+    if current.strip():
+        chunks.append(current.removesuffix("\n\n──────────\n\n"))
+
+    for chunk in chunks:
+        await message.answer(
+            chunk,
+            disable_web_page_preview=True,
+        )
+
+
+def command_payload(message: Message) -> str:
+    text = message.text or message.caption or ""
+    parts = text.split(maxsplit=1)
+    return parts[1] if len(parts) == 2 else ""
 
 
 @router.message(CommandStart())
 async def start_handler(message: Message) -> None:
     await message.answer(
-        "👋 <b>Custom Emoji ID Bot</b>\n\n"
-        "Telegram Premium custom emojisini menga oddiy xabar yoki rasm captionida "
-        "yuboring. Men uning <code>custom_emoji_id</code> qiymatini chiqaraman.\n\n"
-        "Bir xabarda bir nechta custom emoji ham yuborishingiz mumkin."
+        "👋 <b>Custom Emoji Toolkit</b>\n\n"
+        "Custom emoji yuboring — bot ID, format, pack va tayyor kodlarni chiqaradi.\n\n"
+        "🔎 <code>/emoji ID</code> — ID bo‘yicha tekshirish\n"
+        "🧪 <code>/scan</code> — reply qilingan xabardagi emoji’larni skan qilish\n"
+        "📚 <code>/pack ID</code> — emoji pack haqida ma’lumot\n"
+        "🧾 <code>/json ID</code> — developer uchun JSON metadata"
     )
 
 
 @router.message(Command("help"))
 async def help_handler(message: Message) -> None:
     await message.answer(
-        "<b>Qanday ishlatiladi?</b>\n\n"
-        "1. Kerakli Premium emojini tanlang.\n"
-        "2. Uni botga oddiy matn sifatida yuboring.\n"
-        "3. Bot sizga emoji ID va tayyor HTML kodni beradi.\n\n"
-        "Admin ID ni bilish uchun: <code>/id</code>\n\n"
-        "Eslatma: oddiy Unicode emoji custom emoji hisoblanmaydi."
+        "<b>Custom Emoji funksiyalari</b>\n\n"
+        "• Custom emoji yuboring — avtomatik to‘liq info\n"
+        "• <code>/emoji 5368324170671202286</code> — ID’dan emoji info\n"
+        "• Xabarga reply → <code>/scan</code> — ichidagi barcha custom emoji\n"
+        "• <code>/pack ID</code> — pack nomi, soni va linki\n"
+        "• <code>/json ID</code> — file_id va texnik metadata\n\n"
+        "Bir komandada bir nechta ID berish mumkin. Maksimum 200 ta."
     )
 
 
@@ -166,6 +337,150 @@ async def id_handler(message: Message) -> None:
         "Railway → Variables ichida quyidagicha yozing:\n"
         f"<code>ADMIN_IDS={message.from_user.id}</code>\n\n"
         "So‘ng Railway deployment’ni restart yoki redeploy qiling."
+    )
+
+
+@router.message(Command("emoji"))
+async def emoji_by_id_handler(message: Message, bot: Bot) -> None:
+    emoji_ids = parse_custom_emoji_ids(command_payload(message))
+
+    if not emoji_ids and message.reply_to_message:
+        emoji_ids = collect_custom_emoji_ids(message.reply_to_message)
+
+    if not emoji_ids:
+        await message.answer(
+            "Foydalanish:\n"
+            "<code>/emoji 5368324170671202286</code>\n\n"
+            "Yoki custom emoji bor xabarga reply qilib <code>/emoji</code> yozing."
+        )
+        return
+
+    await send_emoji_report(message, bot, emoji_ids)
+
+
+@router.message(Command("scan"))
+async def scan_handler(message: Message, bot: Bot) -> None:
+    if not message.reply_to_message:
+        await message.answer(
+            "🔎 Custom emoji bor xabarga <b>reply</b> qilib "
+            "<code>/scan</code> yozing."
+        )
+        return
+
+    await send_emoji_report(
+        message,
+        bot,
+        collect_custom_emoji_ids(message.reply_to_message),
+    )
+
+
+@router.message(Command("pack"))
+async def pack_handler(message: Message, bot: Bot) -> None:
+    emoji_ids = parse_custom_emoji_ids(command_payload(message))
+
+    if not emoji_ids and message.reply_to_message:
+        emoji_ids = collect_custom_emoji_ids(message.reply_to_message)
+
+    if not emoji_ids:
+        await message.answer(
+            "📚 <code>/pack CUSTOM_EMOJI_ID</code>\n"
+            "yoki custom emoji bor xabarga reply qilib <code>/pack</code> yozing."
+        )
+        return
+
+    emoji_map = await get_custom_emoji_map(bot, emoji_ids)
+    stickers = list(emoji_map.values())
+
+    if not stickers:
+        await message.answer("❌ Bu ID bo‘yicha custom emoji topilmadi.")
+        return
+
+    sticker_sets = await get_sticker_sets(bot, stickers)
+    seen: set[str] = set()
+    sections: list[str] = []
+
+    for sticker in stickers:
+        if not sticker.set_name or sticker.set_name in seen:
+            continue
+
+        seen.add(sticker.set_name)
+        sticker_set = sticker_sets.get(sticker.set_name)
+        title = sticker_set.title if sticker_set else sticker.set_name
+        count = len(sticker_set.stickers) if sticker_set else "—"
+
+        sections.append(
+            "📚 <b>Custom Emoji Pack</b>\n"
+            f"🏷 <b>Nomi:</b> {escape(title)}\n"
+            f"🔑 <b>Short name:</b> <code>{escape(sticker.set_name)}</code>\n"
+            f"🔢 <b>Emoji soni:</b> {count}\n"
+            f'🔗 <a href="https://t.me/addemoji/{escape(sticker.set_name)}">'
+            "Packni Telegram’da ochish</a>"
+        )
+
+    if not sections:
+        await message.answer("❌ Emoji uchun sticker pack ma’lumoti topilmadi.")
+        return
+
+    await message.answer(
+        "\n\n──────────\n\n".join(sections),
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(Command("json"))
+async def json_handler(message: Message, bot: Bot) -> None:
+    emoji_ids = parse_custom_emoji_ids(command_payload(message))
+
+    if not emoji_ids and message.reply_to_message:
+        emoji_ids = collect_custom_emoji_ids(message.reply_to_message)
+
+    if not emoji_ids:
+        await message.answer(
+            "🧾 <code>/json CUSTOM_EMOJI_ID</code>\n"
+            "yoki custom emoji bor xabarga reply qilib <code>/json</code> yozing."
+        )
+        return
+
+    emoji_map = await get_custom_emoji_map(bot, emoji_ids)
+    payload: list[dict[str, Any]] = []
+
+    for emoji_id in emoji_ids:
+        sticker = emoji_map.get(emoji_id)
+        if not sticker:
+            payload.append({"custom_emoji_id": emoji_id, "found": False})
+            continue
+
+        payload.append(
+            {
+                "custom_emoji_id": emoji_id,
+                "found": True,
+                "emoji": sticker.emoji,
+                "set_name": sticker.set_name,
+                "format": sticker_format(sticker),
+                "is_animated": sticker.is_animated,
+                "is_video": sticker.is_video,
+                "needs_repainting": bool(sticker.needs_repainting),
+                "width": sticker.width,
+                "height": sticker.height,
+                "file_size": sticker.file_size,
+                "file_id": sticker.file_id,
+                "file_unique_id": sticker.file_unique_id,
+            }
+        )
+
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    if len(json_text) <= 3500:
+        await message.answer(f"<pre>{escape(json_text)}</pre>")
+        return
+
+    document = BufferedInputFile(
+        json_text.encode("utf-8"),
+        filename="custom_emoji_metadata.json",
+    )
+    await message.answer_document(
+        document=document,
+        caption=f"🧾 {len(payload)} ta custom emoji metadata",
     )
 
 
@@ -267,29 +582,18 @@ async def sendall_handler(message: Message, bot: Bot) -> None:
 
 
 @router.message()
-async def custom_emoji_handler(message: Message) -> None:
+async def custom_emoji_handler(message: Message, bot: Bot) -> None:
     emoji_ids = collect_custom_emoji_ids(message)
 
     if not emoji_ids:
         await message.answer(
             "❌ <b>Custom emoji topilmadi.</b>\n\n"
-            "Telegram Premium emojisini matn ichida yuboring. Oddiy emoji ID ga ega emas."
+            "Telegram Premium custom emojisini yuboring.\n"
+            "ID bo‘lsa: <code>/emoji ID</code>"
         )
         return
 
-    sections: list[str] = []
-    for index, emoji_id in enumerate(emoji_ids, start=1):
-        html_example = f'<tg-emoji emoji-id="{emoji_id}">💎</tg-emoji>'
-        sections.append(
-            f"<b>{index}. Custom Emoji ID</b>\n"
-            f"<code>{emoji_id}</code>\n\n"
-            f"<b>HTML kodi:</b>\n"
-            f"<code>{escape(html_example)}</code>"
-        )
-
-    await message.answer(
-        "✅ <b>Topildi!</b>\n\n" + "\n\n──────────\n\n".join(sections)
-    )
+    await send_emoji_report(message, bot, emoji_ids)
 
 
 async def main() -> None:
